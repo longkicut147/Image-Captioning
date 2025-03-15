@@ -35,21 +35,20 @@ def get_img_and_caption(images_path, captions_path):
 class CocoDataset(Dataset):
     def __init__(self, images_list, captions_list):
         """
-        param images: thư mục chứa ảnh
-        param caption_file: file annotations COCO
-        param split: 'train' hoặc 'test'
+        images_list: A list containing images link
+        caption_list: A list containing captions corresponding to the images
 
-        getitem: train: tensor chứa feature encoder của ảnh và tensor chứa 1 random caption đã tokenize
-                test: tensor chứa feature encoder của ảnh và tensor chứa 5 caption đã tokenize
+        getitem: train: tensor contains image features encoded and tensor contains 1 random tokenized captions
+                test: tensor contains image features encoded and tensor contains 5 tokenized captions
         """
         self.images_list = images_list
         self.captions_list = captions_list
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-        # Chuẩn bị biến lưu
-        self.captions = []  # Caption đã tokenize
-        self.caplen = []    # Độ dài từng caption đã tokenize
-        self.img_features = []  # Đặc trưng ảnh sau khi trích xuất
+        
+        self.captions = []  # tokenized captions
+        self.caplen = []    # tokenized captions length
+        self.img_features = []  # image features
 
         self.encoder = ResNet50Encoder().eval()
         self.transform = transforms.Compose([
@@ -58,24 +57,25 @@ class CocoDataset(Dataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-        # Trích xuất và lưu đặc trưng
+        # extract and save image features
         for img_path in images_list:
             image = Image.open(img_path).convert("RGB")
             image_tensor = self.transform(image).unsqueeze(0)   # [1, 3, 224, 224]
             with torch.no_grad():
-                feature = self.encoder(image_tensor).squeeze(0)
+                feature = self.encoder(image_tensor).squeeze(0) # [3, 224, 224] -> [2048]
             self.img_features.append(feature)
 
-        # Lưu 5 caption tương ứng
-        for list_cap in captions_list:
-            tokenized_list = []
-            length_list = []
-            for caption in list_cap:
-                tokenized_caption = self.tokenizer.encode(caption, add_special_tokens=True)
-                tokenized_list.append(tokenized_caption)
-                length_list.append(len(tokenized_caption))
-            self.captions.append(tokenized_list)
-            self.caplen.append(length_list)
+        # 5 captions for each image
+        if captions_list is not None:
+            for list_cap in captions_list:
+                tokenized_list = []
+                length_list = []
+                for caption in list_cap:
+                    tokenized_caption = self.tokenizer.encode(caption, add_special_tokens=True)
+                    tokenized_list.append(tokenized_caption)
+                    length_list.append(len(tokenized_caption))
+                self.captions.append(tokenized_list)
+                self.caplen.append(length_list)
         
 
     def __len__(self):
@@ -83,7 +83,7 @@ class CocoDataset(Dataset):
 
     def __getitem__(self, idx):
         feature = self.img_features[idx]
-        # 1 caption bất kì trong 5 caption tương ứng với 1 ảnh
+        # 1 random caption for training
         caption = torch.tensor(self.captions[idx][random.randrange(len(self.captions[idx]))], dtype=torch.long)
         return feature, caption
 
@@ -97,16 +97,12 @@ class CaptionLengthSampler(Sampler):
         self.dataset = dataset
         self.batch_size = batch_size
         self.indices = list(range(len(dataset)))
-
-        # Sort indices theo độ dài caption (caption dài ngắn sắp xếp trước)
+        # Sort indices by caption length
         self.indices.sort(key=lambda i: dataset.caplen[i])
 
     def __iter__(self):
         batches = [self.indices[i:i + self.batch_size] for i in range(0, len(self.indices), self.batch_size)]
-
-        # Loại batch không đủ size (để tránh padding quá nhiều)
         batches = [batch for batch in batches if len(batch) == self.batch_size]
-
         for batch in batches:
             yield batch
 
